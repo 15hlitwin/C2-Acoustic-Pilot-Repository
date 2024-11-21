@@ -1,5 +1,5 @@
 const int micPin = A0;  // Microphone connected to analog pin A0
-
+blablabla
 const int baseline = 337;
 
 int amplitude;
