@@ -13,5 +13,11 @@ void loop() {
   int micValue = analogRead(micPin);  // Read the microphone value (0-1023)
   amplitude = abs(micValue-baseline);
   Serial.println(amplitude);           // Print the value to the Serial Monitor
-  delay(50);                          // Small delay to make output readable
+  delay(50);                          // Small delay to make output readabl
 }
+
+
+
+
+
+//fafdaf dfaufadufhdayu fuahfduhfuaed
