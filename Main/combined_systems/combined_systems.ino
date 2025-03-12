@@ -23,7 +23,7 @@ const int MIC_DIFF_THRESHOLD = 5; // Minimum difference to turn instead of going
 const int sampleWindow = 50;  // Sample window width in ms (50 ms = 20Hz)
 
 // Mode selection: 0 for Light Detection, 1 for Audio Detection
-int MODE = 1;
+int MODE = 0;
 
 void configureTSL2591();
 void Mic_Read(int& Mm, int& Ppm, int& diff);
@@ -35,12 +35,12 @@ void setup() {
     
     servoLeft.attach(MOTOR_LEFT_PIN);
     servoRight.attach(MOTOR_RIGHT_PIN);
-    
+    vl53.setAddress(0x30);
+
     if (!vl53.init()) {
         Serial.println("VL53L4CD not detected! Check wiring.");
         while (1);
-    }
-    vl53.setAddress(0x30);  // Change default address to avoid conflict
+    }  // Change default address to avoid conflict
     vl53.setRangeTiming(50, 10);
     vl53.startContinuous();
 

@@ -64,6 +64,7 @@ void readMicrophone() {
   Serial.println(amplitude2);           // Second microphone amplitude
   
   delay(50);                            // Small delay to make output readable
+  currentState = STOPPED;
 }
 
 void controlMovement() {
@@ -111,25 +112,25 @@ void controlMovement() {
 void forward() {
   servoLeft.writeMicroseconds(1700);    // Left wheel counterclockwise
   servoRight.writeMicroseconds(1300);   // Right wheel clockwise
-  delay()
+  delay(FORWARD_TIME);
 }
 
 void turnLeft() {
   servoLeft.writeMicroseconds(1300);    // Left wheel clockwise
   servoRight.writeMicroseconds(1300);   // Right wheel clockwise
-  delay()
+  delay(TURN_TIME);
 }
 
 void turnRight() {
   servoLeft.writeMicroseconds(1700);    // Left wheel counterclockwise
   servoRight.writeMicroseconds(1700);   // Right wheel counterclockwise
-  delay()
+  delay(TURN_TIME);
 }
 
 void backward() {
   servoLeft.writeMicroseconds(1300);    // Left wheel clockwise
   servoRight.writeMicroseconds(1700);   // Right wheel counterclockwise
-  delay()
+  delay(BACKWARD_TIME);
 }
 
 void disableServos() {
