@@ -22,8 +22,8 @@ Servo servoRight;
 Adafruit_TSL2591 tsl = Adafruit_TSL2591(2591);
 VL53L4CD vl53;
 
-const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 100;  // 10cm stop distance
-const uint16_t LIGHT_THRESHOLD = 1;
+const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 80;  // 10cm stop distance
+const uint16_t LIGHT_THRESHOLD = 40;
 
 void configureTSL2591() {
   tsl.setGain(TSL2591_GAIN_MED);
@@ -96,7 +96,7 @@ void lightDetectionLoop() {
         Serial.println("Light detected. Moving forward.");
         moveForward();
     }
-    delay(50);
+    delay(20);
 }
 
 uint16_t getObstacleDistance() {
@@ -116,19 +116,35 @@ uint16_t getLightIntensity() {
 }
 
 void moveForward() {
-    servoLeft.writeMicroseconds(1580);
-    servoRight.writeMicroseconds(1440);
+    servoLeft.attach(MOTOR_LEFT_PIN);
+    servoRight.attach(MOTOR_RIGHT_PIN);
+    
+    // Move for a short time (adjust as needed)
+    servoLeft.writeMicroseconds(1540);
+    servoRight.writeMicroseconds(1450);
+    delay(150);  // Move for 150ms, then stop
+    
+    stopMotors();  // Immediately stop after movement
 }
 
 void spinInPlace() {
+    servoLeft.attach(MOTOR_LEFT_PIN);
+    servoRight.attach(MOTOR_RIGHT_PIN);
+    
+    // Short spin movement
     servoLeft.writeMicroseconds(1500);
     servoRight.writeMicroseconds(1480);
+    delay(150);  // Adjust for desired spin time
+    
+    stopMotors();
 }
 
 void stopMotors() {
-    servoLeft.writeMicroseconds(1500);
+    servoLeft.writeMicroseconds(1500);  // Neutral signal to stop movement
     servoRight.writeMicroseconds(1500);
+    delay(50);  // Allow servos to fully stop before next command
 }
+
 
 // --- Audio Detection Logic ---
 void audioDetectionLoop() {
@@ -194,11 +210,11 @@ void moveTowardSound(int MaxMic, int diff) {
     if (diff < MIC_THRESHOLD) {
         Serial.println("Moving forward");
         servoLeft.writeMicroseconds(1580);
-        servoRight.writeMicroseconds(1440);
+        servoRight.writeMicroseconds(1420);
     } else if (MaxMic == 0) {
         Serial.println("Turning left");
         servoLeft.writeMicroseconds(1500);
-        servoRight.writeMicroseconds(1440);
+        servoRight.writeMicroseconds(1420);
     } else if (MaxMic == 1) {
         Serial.println("Turning right");
         servoLeft.writeMicroseconds(1580);
