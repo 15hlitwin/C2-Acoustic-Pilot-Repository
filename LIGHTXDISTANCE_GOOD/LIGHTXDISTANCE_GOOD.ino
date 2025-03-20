@@ -22,7 +22,7 @@ Servo servoRight;
 Adafruit_TSL2591 tsl = Adafruit_TSL2591(2591);
 VL53L4CD vl53;
 
-const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 80;  // 10cm stop distance
+const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 66;  // 10cm stop distance
 const uint16_t LIGHT_THRESHOLD = 40;
 
 void configureTSL2591() {
@@ -74,14 +74,36 @@ void loop() {
 }
 
 // --- Light Detection Logic ---
+bool challengeComplete = false;  // Flag to stop further movements
+int consecutiveNoObstacleCount = 0;  // Count for consistent obstacle absence
+const int STOP_CONFIRMATION_COUNT = 10;  // Consecutive readings needed to confirm movement
+
 void lightDetectionLoop() {
     uint16_t distance = getObstacleDistance();
     Serial.print("Distance: ");
     Serial.println(distance);
 
-    if (distance < OBSTACLE_DISTANCE_THRESHOLD) {
+    if (challengeComplete) {
+        if (distance >= OBSTACLE_DISTANCE_THRESHOLD) {
+            consecutiveNoObstacleCount++;
+            if (consecutiveNoObstacleCount >= STOP_CONFIRMATION_COUNT) {
+                Serial.println("Obstacle cleared consistently. Resuming movement.");
+                challengeComplete = false;  // Exit completion state
+                consecutiveNoObstacleCount = 0;
+            } else {
+                Serial.println("Obstacle might be cleared, waiting for confirmation...");
+            }
+        } else {
+            consecutiveNoObstacleCount = 0;  // Reset counter if obstacle reappears
+        }
         stopMotors();
-        Serial.println("Obstacle detected. Stopping.");
+        return;
+    }
+
+    if (distance < OBSTACLE_DISTANCE_THRESHOLD) {
+        Serial.println("Obstacle detected. Stopping immediately.");
+        stopMotors();
+        challengeComplete = true;  // Enter completion state instantly
         return;
     }
 
@@ -98,6 +120,7 @@ void lightDetectionLoop() {
     }
     delay(20);
 }
+
 
 uint16_t getObstacleDistance() {
     uint16_t distance;
@@ -120,9 +143,9 @@ void moveForward() {
     servoRight.attach(MOTOR_RIGHT_PIN);
     
     // Move for a short time (adjust as needed)
-    servoLeft.writeMicroseconds(1540);
-    servoRight.writeMicroseconds(1450);
-    delay(150);  // Move for 150ms, then stop
+    servoLeft.writeMicroseconds(1590);
+    servoRight.writeMicroseconds(1420);
+    delay(50);  // Move for 150ms, then stop
     
     stopMotors();  // Immediately stop after movement
 }
@@ -142,6 +165,8 @@ void spinInPlace() {
 void stopMotors() {
     servoLeft.writeMicroseconds(1500);  // Neutral signal to stop movement
     servoRight.writeMicroseconds(1500);
+    servoLeft.detach();
+    servoRight.detach();
     delay(50);  // Allow servos to fully stop before next command
 }
 
