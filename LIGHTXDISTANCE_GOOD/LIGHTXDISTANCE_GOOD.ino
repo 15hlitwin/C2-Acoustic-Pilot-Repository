@@ -17,6 +17,8 @@ Servo servoRight;
 #define MOTOR_RIGHT_PIN 12
 #define MIC_LEFT_PIN A1
 #define MIC_RIGHT_PIN A2
+#define STATUS_LED_PIN 2  // Status LED for messages
+#define MODE_SELECT_PIN 3 // Mode select switch (with LED in series)
 
 // --- Light Detection Setup ---
 Adafruit_TSL2591 tsl = Adafruit_TSL2591(2591);
@@ -26,8 +28,8 @@ const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 66;  // 10cm stop distance
 const uint16_t LIGHT_THRESHOLD = 40;
 
 void configureTSL2591() {
-  tsl.setGain(TSL2591_GAIN_MED);
-  tsl.setTiming(TSL2591_INTEGRATIONTIME_100MS);
+    tsl.setGain(TSL2591_GAIN_MED);
+    tsl.setTiming(TSL2591_INTEGRATIONTIME_100MS);
 }
 
 // --- Audio Detection Setup ---
@@ -40,6 +42,11 @@ void setup() {
     Serial.begin(115200);
     servoLeft.attach(MOTOR_LEFT_PIN);
     servoRight.attach(MOTOR_RIGHT_PIN);
+
+    pinMode(STATUS_LED_PIN, OUTPUT);
+    pinMode(MODE_SELECT_PIN, INPUT);
+
+    updateMode();  // Set initial mode based on D3
 
     if (challengeMode == LIGHT_DETECTION) {
         Wire.begin();
@@ -64,8 +71,34 @@ void setup() {
     }
 }
 
-// --- Combined Loop ---
+// --- Mode Switching Logic ---
+void updateMode() {
+    int modeState = digitalRead(MODE_SELECT_PIN);
+    int newMode = (modeState == HIGH) ? LIGHT_DETECTION : AUDIO_DETECTION;
+
+    if (newMode != challengeMode) {
+        challengeMode = newMode;
+        Serial.print("Mode switched to: ");
+        Serial.println(challengeMode == LIGHT_DETECTION ? "LIGHT_DETECTION" : "AUDIO_DETECTION");
+
+        blinkLED(4, 100);  // Indicate mode switch
+    }
+}
+
+// --- LED Message Display ---
+void blinkLED(int count, int delayMs) {
+    for (int i = 0; i < count; i++) {
+        digitalWrite(STATUS_LED_PIN, HIGH);
+        delay(delayMs);
+        digitalWrite(STATUS_LED_PIN, LOW);
+        delay(delayMs);
+    }
+}
+
+// --- Main Loop ---
 void loop() {
+    updateMode();  // Check if mode switch occurred
+
     if (challengeMode == LIGHT_DETECTION) {
         lightDetectionLoop();
     } else if (challengeMode == AUDIO_DETECTION) {
@@ -88,13 +121,12 @@ void lightDetectionLoop() {
             consecutiveNoObstacleCount++;
             if (consecutiveNoObstacleCount >= STOP_CONFIRMATION_COUNT) {
                 Serial.println("Obstacle cleared consistently. Resuming movement.");
-                challengeComplete = false;  // Exit completion state
+                challengeComplete = false;
                 consecutiveNoObstacleCount = 0;
-            } else {
-                Serial.println("Obstacle might be cleared, waiting for confirmation...");
+                blinkLED(3, 200);  // 3 short blinks for resuming
             }
         } else {
-            consecutiveNoObstacleCount = 0;  // Reset counter if obstacle reappears
+            consecutiveNoObstacleCount = 0;
         }
         stopMotors();
         return;
@@ -103,7 +135,8 @@ void lightDetectionLoop() {
     if (distance < OBSTACLE_DISTANCE_THRESHOLD) {
         Serial.println("Obstacle detected. Stopping immediately.");
         stopMotors();
-        challengeComplete = true;  // Enter completion state instantly
+        challengeComplete = true;
+        blinkLED(2, 300);  // 2 fast blinks for obstacle detected
         return;
     }
 
@@ -121,7 +154,6 @@ void lightDetectionLoop() {
     delay(20);
 }
 
-
 uint16_t getObstacleDistance() {
     uint16_t distance;
     do {
@@ -135,41 +167,38 @@ uint16_t getLightIntensity() {
     uint32_t lum = tsl.getFullLuminosity();
     uint16_t ir = lum >> 16;
     uint16_t full = lum & 0xFFFF;
-    return full; //tsl.calculateLux(full, ir);
+    return full;
 }
 
 void moveForward() {
     servoLeft.attach(MOTOR_LEFT_PIN);
     servoRight.attach(MOTOR_RIGHT_PIN);
     
-    // Move for a short time (adjust as needed)
     servoLeft.writeMicroseconds(1590);
     servoRight.writeMicroseconds(1420);
-    delay(50);  // Move for 150ms, then stop
+    delay(30);
     
-    stopMotors();  // Immediately stop after movement
+    stopMotors();
 }
 
 void spinInPlace() {
     servoLeft.attach(MOTOR_LEFT_PIN);
     servoRight.attach(MOTOR_RIGHT_PIN);
     
-    // Short spin movement
     servoLeft.writeMicroseconds(1500);
     servoRight.writeMicroseconds(1480);
-    delay(150);  // Adjust for desired spin time
+    delay(150);
     
     stopMotors();
 }
 
 void stopMotors() {
-    servoLeft.writeMicroseconds(1500);  // Neutral signal to stop movement
+    servoLeft.writeMicroseconds(1500);
     servoRight.writeMicroseconds(1500);
     servoLeft.detach();
     servoRight.detach();
-    delay(50);  // Allow servos to fully stop before next command
+    delay(50);
 }
-
 
 // --- Audio Detection Logic ---
 void audioDetectionLoop() {
@@ -183,7 +212,7 @@ void audioDetectionLoop() {
         stopMotors();
     }
 
-    delay(50);  // Same sampling window as audio detection system
+    delay(50);
 }
 
 void Mic_Read(int& Mm, int& Ppm, int& diff) {
@@ -207,14 +236,6 @@ void Mic_Read(int& Mm, int& Ppm, int& diff) {
     unsigned int peakToPeak[2] = {signalMax[0] - signalMin[0], signalMax[1] - signalMin[1]};
     int difference = abs((int)peakToPeak[0] - (int)peakToPeak[1]);
 
-    if (peakToPeak[0] > peakToPeak[1]) {
-        maxMicrophone = 0;
-        peakToPeakMax = peakToPeak[0];
-    } else {
-        maxMicrophone = 1;
-        peakToPeakMax = peakToPeak[1];
-    }
-
     Serial.print("Mic_A1: ");
     Serial.print(peakToPeak[0]);
     Serial.print("\tMic_A2: ");
@@ -226,24 +247,20 @@ void Mic_Read(int& Mm, int& Ppm, int& diff) {
     Serial.print("\tPeak-to-Peak Max: ");
     Serial.println(peakToPeakMax);
 
-    Mm = maxMicrophone;
-    Ppm = peakToPeakMax;
+    Mm = (peakToPeak[0] > peakToPeak[1]) ? 0 : 1;
+    Ppm = max(peakToPeak[0], peakToPeak[1]);
     diff = difference;
 }
 
 void moveTowardSound(int MaxMic, int diff) {
     if (diff < MIC_THRESHOLD) {
-        Serial.println("Moving forward");
         servoLeft.writeMicroseconds(1580);
         servoRight.writeMicroseconds(1420);
     } else if (MaxMic == 0) {
-        Serial.println("Turning left");
         servoLeft.writeMicroseconds(1500);
         servoRight.writeMicroseconds(1420);
     } else if (MaxMic == 1) {
-        Serial.println("Turning right");
         servoLeft.writeMicroseconds(1580);
         servoRight.writeMicroseconds(1500);
     }
 }
-
