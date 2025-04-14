@@ -3,39 +3,37 @@
 #include <Servo.h>
 #include <Wire.h>
 
-// Challenge mode selector
+// --- Constants & Config ---
 #define LIGHT_DETECTION 1
 #define AUDIO_DETECTION 2
-int challengeMode = LIGHT_DETECTION;  // Set to LIGHT_DETECTION or AUDIO_DETECTION
+int challengeMode = LIGHT_DETECTION;
 
-// --- Common Setup ---
-Servo servoLeft;
-Servo servoRight;
-
-// Pins
 #define MOTOR_LEFT_PIN 13
 #define MOTOR_RIGHT_PIN 12
 #define MIC_LEFT_PIN A1
 #define MIC_RIGHT_PIN A2
-#define STATUS_LED_PIN 2  // Status LED for messages
-#define MODE_SELECT_PIN 3 // Mode select switch (with LED in series)
+#define STATUS_LED_PIN 2
+#define MODE_SELECT_PIN 3
 
-// --- Light Detection Setup ---
+const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 66;
+const uint16_t LIGHT_THRESHOLD = 40;
+const int MIC_THRESHOLD = 20;
+const int SOUND_THRESHOLD = 120;
+const int STOP_CONFIRMATION_COUNT = 10;
+const int sampleWindow = 20;
+
+int recentMaxSound = SOUND_THRESHOLD + 1; // Start with something valid
+
+
+// --- Hardware Interfaces ---
+Servo servoLeft;
+Servo servoRight;
 Adafruit_TSL2591 tsl = Adafruit_TSL2591(2591);
 VL53L4CD vl53;
 
-const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 66;  // 10cm stop distance
-const uint16_t LIGHT_THRESHOLD = 40;
-
-void configureTSL2591() {
-    tsl.setGain(TSL2591_GAIN_MED);
-    tsl.setTiming(TSL2591_INTEGRATIONTIME_100MS);
-}
-
-// --- Audio Detection Setup ---
-const int sampleWindow = 50;  // Sample window in ms
-const int MIC_THRESHOLD = 5;
-const int SOUND_THRESHOLD = 130;
+// --- State ---
+bool challengeComplete = false;
+int consecutiveNoObstacleCount = 0;
 
 // --- Setup ---
 void setup() {
@@ -46,46 +44,56 @@ void setup() {
     pinMode(STATUS_LED_PIN, OUTPUT);
     pinMode(MODE_SELECT_PIN, INPUT);
 
-    updateMode();  // Set initial mode based on D3
+    Wire.begin();
+    Wire.setClock(400000);
+    vl53.setAddress(0x30);
+
+    if (!vl53.init()) {
+        Serial.println("VL53L4CD not detected!");
+        while (1);
+    }
+
+    vl53.setRangeTiming(50, 10);
+    vl53.startContinuous();
+
+    updateMode();
 
     if (challengeMode == LIGHT_DETECTION) {
-        Wire.begin();
-        Wire.setClock(400000);
-        vl53.setAddress(0x30);
-
-        if (!vl53.init()) {
-            Serial.println("VL53L4CD not detected! Check wiring.");
-            while (1);
-        }
-        vl53.setRangeTiming(50, 10);
-        vl53.startContinuous();
-
-        if (!tsl.begin()) {
-            Serial.println("TSL2591 not detected! Check wiring.");
-            while (1);
-        }
-        configureTSL2591();
-        Serial.println("Light detection setup complete.");
+        setupLightSensors();
     } else {
         Serial.println("Audio detection setup complete.");
     }
 }
 
-// --- Mode Switching Logic ---
-void updateMode() {
-    int modeState = digitalRead(MODE_SELECT_PIN);
-    int newMode = (modeState == HIGH) ? LIGHT_DETECTION : AUDIO_DETECTION;
 
-    if (newMode != challengeMode) {
-        challengeMode = newMode;
-        Serial.print("Mode switched to: ");
-        Serial.println(challengeMode == LIGHT_DETECTION ? "LIGHT_DETECTION" : "AUDIO_DETECTION");
-
-        blinkLED(4, 100);  // Indicate mode switch
+void loop() {
+    updateMode();
+    if (challengeMode == LIGHT_DETECTION) {
+        lightDetectionLoop();
+    } else {
+        audioDetectionLoop();
     }
 }
 
-// --- LED Message Display ---
+// --- Mode Management ---
+void updateMode() {
+    int modeState = digitalRead(MODE_SELECT_PIN);
+    int newMode = (modeState == HIGH) ? LIGHT_DETECTION : AUDIO_DETECTION;
+    if (newMode != challengeMode) {
+        challengeMode = newMode;
+        Serial.print("Mode switched to: ");
+        Serial.println(challengeMode == LIGHT_DETECTION ? "LIGHT" : "AUDIO");
+        blinkLED(4, 100);
+
+        // Initialize appropriate sensors when switching
+        if (challengeMode == LIGHT_DETECTION) {
+            setupLightSensors();
+        }
+    }
+}
+
+
+// --- Utility ---
 void blinkLED(int count, int delayMs) {
     for (int i = 0; i < count; i++) {
         digitalWrite(STATUS_LED_PIN, HIGH);
@@ -95,64 +103,34 @@ void blinkLED(int count, int delayMs) {
     }
 }
 
-// --- Main Loop ---
-void loop() {
-    updateMode();  // Check if mode switch occurred
-
-    if (challengeMode == LIGHT_DETECTION) {
-        lightDetectionLoop();
-    } else if (challengeMode == AUDIO_DETECTION) {
-        audioDetectionLoop();
+// ---------------------
+// Light Detection Mode
+// ---------------------
+void setupLightSensors() {
+    if (!tsl.begin()) {
+        Serial.println("TSL2591 not detected!");
+        while (1);
     }
-}
 
-// --- Light Detection Logic ---
-bool challengeComplete = false;  // Flag to stop further movements
-int consecutiveNoObstacleCount = 0;  // Count for consistent obstacle absence
-const int STOP_CONFIRMATION_COUNT = 10;  // Consecutive readings needed to confirm movement
+    tsl.setGain(TSL2591_GAIN_MED);
+    tsl.setTiming(TSL2591_INTEGRATIONTIME_100MS);
+
+    Serial.println("Light detection setup complete.");
+}
 
 void lightDetectionLoop() {
-    uint16_t distance = getObstacleDistance();
-    Serial.print("Distance: ");
-    Serial.println(distance);
-
-    if (challengeComplete) {
-        if (distance >= OBSTACLE_DISTANCE_THRESHOLD) {
-            consecutiveNoObstacleCount++;
-            if (consecutiveNoObstacleCount >= STOP_CONFIRMATION_COUNT) {
-                Serial.println("Obstacle cleared consistently. Resuming movement.");
-                challengeComplete = false;
-                consecutiveNoObstacleCount = 0;
-                blinkLED(3, 200);  // 3 short blinks for resuming
-            }
-        } else {
-            consecutiveNoObstacleCount = 0;
-        }
-        stopMotors();
-        return;
-    }
-
-    if (distance < OBSTACLE_DISTANCE_THRESHOLD) {
-        Serial.println("Obstacle detected. Stopping immediately.");
-        stopMotors();
-        challengeComplete = true;
-        blinkLED(2, 300);  // 2 fast blinks for obstacle detected
-        return;
-    }
+    if (checkObstacle()) return;
 
     uint16_t lightLevel = getLightIntensity();
-    Serial.print("Light Intensity: ");
-    Serial.println(lightLevel);
-
     if (lightLevel < LIGHT_THRESHOLD) {
-        Serial.println("No significant light. Spinning.");
+        Serial.println("Low light. Spinning.");
         spinInPlace();
     } else {
-        Serial.println("Light detected. Moving forward.");
+        Serial.println("Light detected. Moving.");
         moveForward();
     }
-    delay(20);
 }
+
 
 uint16_t getObstacleDistance() {
     uint16_t distance;
@@ -165,63 +143,30 @@ uint16_t getObstacleDistance() {
 
 uint16_t getLightIntensity() {
     uint32_t lum = tsl.getFullLuminosity();
-    uint16_t ir = lum >> 16;
-    uint16_t full = lum & 0xFFFF;
-    return full;
+    return lum & 0xFFFF;  // Only visible light
 }
 
-void moveForward() {
-    servoLeft.attach(MOTOR_LEFT_PIN);
-    servoRight.attach(MOTOR_RIGHT_PIN);
-    
-    servoLeft.writeMicroseconds(1590);
-    servoRight.writeMicroseconds(1420);
-    delay(30);
-    
-    stopMotors();
-}
-
-void spinInPlace() {
-    servoLeft.attach(MOTOR_LEFT_PIN);
-    servoRight.attach(MOTOR_RIGHT_PIN);
-    
-    servoLeft.writeMicroseconds(1500);
-    servoRight.writeMicroseconds(1480);
-    delay(150);
-    
-    stopMotors();
-}
-
-void stopMotors() {
-    servoLeft.writeMicroseconds(1500);
-    servoRight.writeMicroseconds(1500);
-    servoLeft.detach();
-    servoRight.detach();
-    delay(50);
-}
-
-// --- Audio Detection Logic ---
+// ---------------------
+// Audio Detection Mode
+// ---------------------
 void audioDetectionLoop() {
+    if (checkObstacle()) return;
+
     int MaxMic, PtPM, diff;
-    Mic_Read(MaxMic, PtPM, diff);
+    readMicrophones(MaxMic, PtPM, diff);
 
     if (PtPM > SOUND_THRESHOLD) {
         moveTowardSound(MaxMic, diff);
     } else {
-        Serial.println("No significant sound detected, stopping");
+        Serial.println("No sound detected.");
         stopMotors();
     }
-
-    delay(50);
 }
 
-void Mic_Read(int& Mm, int& Ppm, int& diff) {
-    unsigned long startMillis = millis();
-    unsigned int peakToPeakMax = 0;
-    int maxMicrophone = -1;
 
-    unsigned int signalMax[2] = {0, 0};
-    unsigned int signalMin[2] = {1024, 1024};
+void readMicrophones(int& maxMic, int& peakToPeakMax, int& diff) {
+    unsigned long startMillis = millis();
+    unsigned int signalMax[2] = {0, 0}, signalMin[2] = {1024, 1024};
 
     while (millis() - startMillis < sampleWindow) {
         for (int i = 0; i < 2; i++) {
@@ -233,34 +178,104 @@ void Mic_Read(int& Mm, int& Ppm, int& diff) {
         }
     }
 
-    unsigned int peakToPeak[2] = {signalMax[0] - signalMin[0], signalMax[1] - signalMin[1]};
-    int difference = abs((int)peakToPeak[0] - (int)peakToPeak[1]);
+    unsigned int p2p[2] = {signalMax[0] - signalMin[0], signalMax[1] - signalMin[1]};
+    maxMic = (p2p[0] > p2p[1]) ? 0 : 1;
+    peakToPeakMax = max(p2p[0], p2p[1]);
+    diff = abs((int)p2p[0] - (int)p2p[1]);
 
-    Serial.print("Mic_A1: ");
-    Serial.print(peakToPeak[0]);
-    Serial.print("\tMic_A2: ");
-    Serial.print(peakToPeak[1]);
-    Serial.print("\tDifference: ");
-    Serial.print(difference);
-    Serial.print("\tLoudest Mic: ");
-    Serial.print(maxMicrophone == 0 ? "A1" : "A2");
-    Serial.print("\tPeak-to-Peak Max: ");
-    Serial.println(peakToPeakMax);
+    Serial.print("Mic A1: "); Serial.print(p2p[0]);
+    Serial.print(" | Mic A2: "); Serial.print(p2p[1]);
+    Serial.print(" | Diff: "); Serial.print(diff);
+    Serial.print(" | Max Mic: "); Serial.println(maxMic == 0 ? "A1" : "A2");
 
-    Mm = (peakToPeak[0] > peakToPeak[1]) ? 0 : 1;
-    Ppm = max(peakToPeak[0], peakToPeak[1]);
-    diff = difference;
+    if (peakToPeakMax > recentMaxSound) {
+    recentMaxSound = peakToPeakMax;
+    }
+
+    // Optional: decay recent max over time to prevent it sticking forever
+    recentMaxSound = max(recentMaxSound - 1, SOUND_THRESHOLD + 1);
 }
 
-void moveTowardSound(int MaxMic, int diff) {
-    if (diff < MIC_THRESHOLD) {
-        servoLeft.writeMicroseconds(1580);
-        servoRight.writeMicroseconds(1420);
-    } else if (MaxMic == 0) {
-        servoLeft.writeMicroseconds(1500);
-        servoRight.writeMicroseconds(1420);
-    } else if (MaxMic == 1) {
-        servoLeft.writeMicroseconds(1580);
-        servoRight.writeMicroseconds(1500);
+int calculateDurationFromSound(int peakToPeak) {
+    const int MIN_DURATION = 30;
+    const int MAX_DURATION = 120;
+
+    // Use recentMaxSound for dynamic scaling
+    int normalized = map(peakToPeak, SOUND_THRESHOLD, recentMaxSound, MAX_DURATION, MIN_DURATION);
+    return constrain(normalized, MIN_DURATION, MAX_DURATION);
+}
+
+// ---------------------
+// Movement Control
+// ---------------------
+
+bool checkObstacle() {
+    uint16_t distance = getObstacleDistance();
+
+    if (challengeComplete) {
+        if (distance >= OBSTACLE_DISTANCE_THRESHOLD) {
+            if (++consecutiveNoObstacleCount >= STOP_CONFIRMATION_COUNT) {
+                challengeComplete = false;
+                consecutiveNoObstacleCount = 0;
+                Serial.println("Obstacle cleared. Resuming.");
+                blinkLED(3, 200);
+            }
+        } else {
+            consecutiveNoObstacleCount = 0;
+        }
+        stopMotors();
+        return true;
     }
+
+    if (distance < OBSTACLE_DISTANCE_THRESHOLD) {
+        challengeComplete = true;
+        Serial.println("Obstacle detected. Stopping.");
+        blinkLED(2, 300);
+        stopMotors();
+        return true;
+    }
+
+    return false;
+}
+
+
+void moveForward() {
+    setMotors(1590, 1420, 30);
+}
+
+void spinInPlace() {
+    setMotors(1500, 1475, 150);
+}
+
+void moveTowardSound(int maxMic, int diff) {
+    int duration = calculateDurationFromSound(max(diff, SOUND_THRESHOLD)); // Using diff or P2P here is your choice
+
+    if (diff < MIC_THRESHOLD) {
+        setMotors(1580, 1420, duration);
+    } else if (maxMic == 1) {
+        setMotors(1500, 1420, duration);
+    } else {
+        setMotors(1580, 1500, duration);
+    }
+
+    Serial.print("Moving with duration: ");
+    Serial.println(duration);
+}
+
+
+void stopMotors() {
+    servoLeft.writeMicroseconds(1500);
+    servoRight.writeMicroseconds(1500);
+    servoLeft.detach();
+    servoRight.detach();
+    delay(50);
+}
+
+void setMotors(int left, int right, int duration) {
+    servoLeft.attach(MOTOR_LEFT_PIN);
+    servoRight.attach(MOTOR_RIGHT_PIN);
+    servoLeft.writeMicroseconds(left);
+    servoRight.writeMicroseconds(right);
+    delay(duration);
+    stopMotors();
 }
