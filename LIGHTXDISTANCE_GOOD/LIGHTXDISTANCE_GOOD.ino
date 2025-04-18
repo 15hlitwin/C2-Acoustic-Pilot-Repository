@@ -17,8 +17,8 @@ int challengeMode = LIGHT_DETECTION;
 
 const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 66;
 const uint16_t LIGHT_THRESHOLD = 40;
-const int MIC_THRESHOLD = 20;
-const int SOUND_THRESHOLD = 120;
+const int MIC_THRESHOLD = 15;
+const int SOUND_THRESHOLD = 100;
 const int STOP_CONFIRMATION_COUNT = 10;
 const int sampleWindow = 20;
 
@@ -37,7 +37,7 @@ int consecutiveNoObstacleCount = 0;
 
 // --- Setup ---
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(9600);
     servoLeft.attach(MOTOR_LEFT_PIN);
     servoRight.attach(MOTOR_RIGHT_PIN);
 
@@ -205,6 +205,20 @@ int calculateDurationFromSound(int peakToPeak) {
     return constrain(normalized, MIN_DURATION, MAX_DURATION);
 }
 
+int amplitudeToSpeed(int amplitude) {
+    // Map amplitude (e.g., 0–300) to movement duration (in ms)
+    // Closer = louder = smaller duration (slower movement)
+    // Tune these values as needed for your mic range
+    int maxAmplitude = 200;
+    int minSpeed = 10;
+    int maxSpeed = 100;
+    
+    amplitude = constrain(amplitude, 0, maxAmplitude);
+    int speed = map(amplitude, 0, maxAmplitude, maxSpeed, minSpeed);
+    return speed;
+}
+
+
 // ---------------------
 // Movement Control
 // ---------------------
@@ -248,14 +262,26 @@ void spinInPlace() {
 }
 
 void moveTowardSound(int maxMic, int diff) {
-    int duration = calculateDurationFromSound(max(diff, SOUND_THRESHOLD)); // Using diff or P2P here is your choice
+    int duration = amplitudeToSpeed(diff); // Shorter = closer = slower movement
+
+    // Motor speeds (Left motor slightly faster than right motor to compensate)
+    int baseLeft = 1600;  // Slightly faster for the left motor
+    int baseRight = 1400; // Slightly slower for the right motor
+
+    // Calculate steering power based on diff (how much difference between the mics)
+    int delta = map(diff, 0, 100, 0, 300);  // Adjust for stronger/weaker sound
 
     if (diff < MIC_THRESHOLD) {
-        setMotors(1580, 1420, duration);
-    } else if (maxMic == 1) {
-        setMotors(1500, 1420, duration);
+        // Move straight
+        setMotors(baseLeft, baseRight, duration);
+    } else if (maxMic == 0) {
+        // LEFT mic louder → turn LEFT
+        // Reduce left speed a little more, increase right speed to turn left
+        setMotors(baseLeft - delta / 2, baseRight + delta, duration);
     } else {
-        setMotors(1580, 1500, duration);
+        // RIGHT mic louder → turn RIGHT
+        // Reduce right speed a little more, increase left speed to turn right
+        setMotors(baseLeft + delta, baseRight - delta / 2, duration);
     }
 
     Serial.print("Moving with duration: ");
