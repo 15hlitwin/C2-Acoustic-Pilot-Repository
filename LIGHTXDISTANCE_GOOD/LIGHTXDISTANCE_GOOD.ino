@@ -16,7 +16,7 @@ int challengeMode = LIGHT_DETECTION;
 #define MODE_SELECT_PIN 3
 
 const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 66;
-const uint16_t LIGHT_THRESHOLD = 40;
+const uint16_t LIGHT_THRESHOLD = 15;
 const int MIC_THRESHOLD = 15;
 const int SOUND_THRESHOLD = 100;
 const int STOP_CONFIRMATION_COUNT = 10;
@@ -118,18 +118,43 @@ void setupLightSensors() {
     Serial.println("Light detection setup complete.");
 }
 
+bool isSpinning = true;  // Start by spinning
+
+const int SPIN_TO_MOVE_THRESHOLD = 350;
+const int MOVE_TO_SPIN_THRESHOLD = 250;
+
 void lightDetectionLoop() {
     if (checkObstacle()) return;
 
     uint16_t lightLevel = getLightIntensity();
-    if (lightLevel < LIGHT_THRESHOLD) {
-        Serial.println("Low light. Spinning.");
-        spinInPlace();
+    Serial.print("Light level: "); Serial.println(lightLevel);
+
+    if (isSpinning) {
+        if (lightLevel > SPIN_TO_MOVE_THRESHOLD) {
+            isSpinning = false;
+        }
     } else {
-        Serial.println("Light detected. Moving.");
-        moveForward();
+        if (lightLevel < MOVE_TO_SPIN_THRESHOLD) {
+            isSpinning = true;
+        }
+    }
+
+    if (isSpinning) {
+        int spinSpeed = map(lightLevel, 0, 50, 150, 50);
+        spinSpeed = constrain(spinSpeed, 50, 150);
+        spinInPlaceScaled(spinSpeed);
+        Serial.print(" | SpinSpeed: "); Serial.println(spinSpeed);
+    } else {
+        int moveSpeed = map(lightLevel, 20, 900, 50, 8);
+        moveSpeed = constrain(moveSpeed, 8, 50);
+        moveForwardScaled(moveSpeed);
+        Serial.print(" | MoveSpeed: "); Serial.println(moveSpeed);
     }
 }
+
+
+
+
 
 
 uint16_t getObstacleDistance() {
@@ -253,13 +278,16 @@ bool checkObstacle() {
 }
 
 
-void moveForward() {
-    setMotors(1590, 1420, 30);
+void spinInPlaceScaled(int duration) {
+    setMotors(1500, 1475, duration); // Clockwise spin with slight bias
 }
 
-void spinInPlace() {
-    setMotors(1500, 1475, 150);
+void moveForwardScaled(int duration) {
+    // Compensated forward movement (your original working setup)
+    setMotors(1590, 1430, duration);
+    delay(50);
 }
+
 
 void moveTowardSound(int maxMic, int diff) {
     int duration = amplitudeToSpeed(diff); // Shorter = closer = slower movement
