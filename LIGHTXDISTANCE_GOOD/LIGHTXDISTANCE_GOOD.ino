@@ -17,12 +17,12 @@ int challengeMode = LIGHT_DETECTION;
 
 const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 66;
 const uint16_t LIGHT_THRESHOLD = 15;
-const int MIC_THRESHOLD = 15;
-const int SOUND_THRESHOLD = 100;
+const int SOUND_THRESHOLD = 30;  // Minimum sound to trigger move
+const int MIC_DIFF_THRESHOLD = 5; // Minimum L/R diff to steer
+const int MOVEMENT_DURATION = 300; // Move for at least 300ms once started
 const int STOP_CONFIRMATION_COUNT = 10;
 const int sampleWindow = 20;
 
-int recentMaxSound = SOUND_THRESHOLD + 1; // Start with something valid
 
 
 // --- Hardware Interfaces ---
@@ -172,77 +172,119 @@ uint16_t getLightIntensity() {
 }
 
 // ---------------------
-// Audio Detection Mode
+// Audio Detection Mode 
 // ---------------------
+
+// State Machine for audio behavior
+enum AudioState {
+    LISTENING,
+    ACTING
+};
+
+AudioState audioState = LISTENING;
+unsigned long stateStartTime = 0;
+int lastDiff = 0; // To remember L/R difference
+int lastTotalSound = 0;
+
 void audioDetectionLoop() {
-    if (checkObstacle()) return;
+    switch (audioState) {
+        case LISTENING:
+            listenForAudio();
+            break;
+        case ACTING:
+            actOnAudio();
+            break;
+    }
+}
 
-    int MaxMic, PtPM, diff;
-    readMicrophones(MaxMic, PtPM, diff);
+void listenForAudio() {
+    static int leftAccum = 0, rightAccum = 0, samples = 0;
 
-    if (PtPM > SOUND_THRESHOLD) {
-        moveTowardSound(MaxMic, diff);
+    if (stateStartTime == 0) {
+        stateStartTime = millis();
+        leftAccum = 0;
+        rightAccum = 0;
+        samples = 0;
+    }
+
+    if (millis() - stateStartTime < 1000) { // Listen for 1 second
+        int leftAmp = sampleMicrophoneAC(MIC_LEFT_PIN);
+        int rightAmp = sampleMicrophoneAC(MIC_RIGHT_PIN);
+
+        leftAccum += leftAmp;
+        rightAccum += rightAmp;
+        samples++;
+
+        // Debugging the raw microphone values
+        Serial.print("Left: "); Serial.print(leftAmp);
+        Serial.print(" | Right: "); Serial.println(rightAmp);
     } else {
-        Serial.println("No sound detected.");
-        stopMotors();
+        int avgLeft = leftAccum / max(samples, 1);
+        int avgRight = rightAccum / max(samples, 1);
+        lastDiff = avgLeft - avgRight;
+        lastTotalSound = max(avgLeft, avgRight);
+
+        // Debugging the averages
+        Serial.print("Avg Left: "); Serial.print(avgLeft);
+        Serial.print(" | Avg Right: "); Serial.println(avgRight);
+
+        audioState = ACTING;
+        stateStartTime = millis();
     }
 }
 
 
-void readMicrophones(int& maxMic, int& peakToPeakMax, int& diff) {
-    unsigned long startMillis = millis();
-    unsigned int signalMax[2] = {0, 0}, signalMin[2] = {1024, 1024};
+void actOnAudio() {
+    if (stateStartTime == 0) {
+        stateStartTime = millis();
+    }
 
-    while (millis() - startMillis < sampleWindow) {
-        for (int i = 0; i < 2; i++) {
-            int sample = analogRead(MIC_LEFT_PIN + i);
-            if (sample < 1024) {
-                if (sample > signalMax[i]) signalMax[i] = sample;
-                if (sample < signalMin[i]) signalMin[i] = sample;
+    if (lastTotalSound > SOUND_THRESHOLD) {
+        // Map the amplitude to a movement duration
+        // Base duration is 150ms for low amplitude (20), and 20ms for high amplitude (60)
+        int moveDuration = map(lastTotalSound, 20, 60, 300, 20);
+        moveDuration = constrain(moveDuration, 20, 300); // Ensure the duration is between 20ms and 150ms
+
+        // If the difference between the microphones is significant, turn left or right
+        if (abs(lastDiff) > MIC_DIFF_THRESHOLD) {
+            if (lastDiff > 0) {
+                // Turn Left
+                setMotors(1400, 1500, 150);  // turn left a bit
+                Serial.print("Turning Left");
+            } else {
+                // Turn Right
+                setMotors(1500, 1600, 150);  // turn right a bit
+                Serial.print("Turning Right");
             }
         }
+        delay(200);
+        setMotors(1600, 1400, moveDuration); // Move forward for the scaled duration
+        Serial.print("Moving Forward | Duration: "); Serial.println(moveDuration);
+    } else {
+        stopMotors(); // No loud sound detected, stop motors
+        Serial.println("No significant sound detected, stopping.");
     }
+    if (checkObstacle()) return;
+    audioState = LISTENING; // Return to listening state
+    stateStartTime = 0; // Reset for next listen
+}
 
-    unsigned int p2p[2] = {signalMax[0] - signalMin[0], signalMax[1] - signalMin[1]};
-    maxMic = (p2p[0] > p2p[1]) ? 0 : 1;
-    peakToPeakMax = max(p2p[0], p2p[1]);
-    diff = abs((int)p2p[0] - (int)p2p[1]);
 
-    Serial.print("Mic A1: "); Serial.print(p2p[0]);
-    Serial.print(" | Mic A2: "); Serial.print(p2p[1]);
-    Serial.print(" | Diff: "); Serial.print(diff);
-    Serial.print(" | Max Mic: "); Serial.println(maxMic == 0 ? "A1" : "A2");
+// --- Microphone Sampling ---
+int sampleMicrophoneAC(int pin) {
+  unsigned long startMillis = millis();
+  int signalMax = 0;
+  int signalMin = 1023;
 
-    if (peakToPeakMax > recentMaxSound) {
-    recentMaxSound = peakToPeakMax;
+  while (millis() - startMillis < 20) { // 20ms sample window
+    int sample = analogRead(pin);
+    if (sample < 1023) {
+      if (sample > signalMax) signalMax = sample;
+      if (sample < signalMin) signalMin = sample;
     }
-
-    // Optional: decay recent max over time to prevent it sticking forever
-    recentMaxSound = max(recentMaxSound - 1, SOUND_THRESHOLD + 1);
+  }
+  return signalMax - signalMin; // Peak-to-peak amplitude
 }
-
-int calculateDurationFromSound(int peakToPeak) {
-    const int MIN_DURATION = 30;
-    const int MAX_DURATION = 120;
-
-    // Use recentMaxSound for dynamic scaling
-    int normalized = map(peakToPeak, SOUND_THRESHOLD, recentMaxSound, MAX_DURATION, MIN_DURATION);
-    return constrain(normalized, MIN_DURATION, MAX_DURATION);
-}
-
-int amplitudeToSpeed(int amplitude) {
-    // Map amplitude (e.g., 0–300) to movement duration (in ms)
-    // Closer = louder = smaller duration (slower movement)
-    // Tune these values as needed for your mic range
-    int maxAmplitude = 200;
-    int minSpeed = 10;
-    int maxSpeed = 100;
-    
-    amplitude = constrain(amplitude, 0, maxAmplitude);
-    int speed = map(amplitude, 0, maxAmplitude, maxSpeed, minSpeed);
-    return speed;
-}
-
 
 // ---------------------
 // Movement Control
@@ -286,34 +328,6 @@ void moveForwardScaled(int duration) {
     // Compensated forward movement (your original working setup)
     setMotors(1590, 1430, duration);
     delay(50);
-}
-
-
-void moveTowardSound(int maxMic, int diff) {
-    int duration = amplitudeToSpeed(diff); // Shorter = closer = slower movement
-
-    // Motor speeds (Left motor slightly faster than right motor to compensate)
-    int baseLeft = 1600;  // Slightly faster for the left motor
-    int baseRight = 1400; // Slightly slower for the right motor
-
-    // Calculate steering power based on diff (how much difference between the mics)
-    int delta = map(diff, 0, 100, 0, 300);  // Adjust for stronger/weaker sound
-
-    if (diff < MIC_THRESHOLD) {
-        // Move straight
-        setMotors(baseLeft, baseRight, duration);
-    } else if (maxMic == 0) {
-        // LEFT mic louder → turn LEFT
-        // Reduce left speed a little more, increase right speed to turn left
-        setMotors(baseLeft - delta / 2, baseRight + delta, duration);
-    } else {
-        // RIGHT mic louder → turn RIGHT
-        // Reduce right speed a little more, increase left speed to turn right
-        setMotors(baseLeft + delta, baseRight - delta / 2, duration);
-    }
-
-    Serial.print("Moving with duration: ");
-    Serial.println(duration);
 }
 
 
