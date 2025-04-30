@@ -10,18 +10,18 @@ int challengeMode = LIGHT_DETECTION;
 
 #define MOTOR_LEFT_PIN 13
 #define MOTOR_RIGHT_PIN 12
-#define MIC_LEFT_PIN A1
-#define MIC_RIGHT_PIN A2
+#define MIC_LEFT_PIN A0
+#define MIC_RIGHT_PIN A1
 #define STATUS_LED_PIN 2
 #define MODE_SELECT_PIN 3
 
-const uint16_t OBSTACLE_DISTANCE_THRESHOLD = 66;
+uint16_t obstacleThresholdAudio = 100;
+uint16_t obstacleThresholdLight = 67; 
+
 const uint16_t LIGHT_THRESHOLD = 15;
-const int SOUND_THRESHOLD = 30;  // Minimum sound to trigger move
-const int MIC_DIFF_THRESHOLD = 5; // Minimum L/R diff to steer
-const int MOVEMENT_DURATION = 300; // Move for at least 300ms once started
+const int SOUND_THRESHOLD = 10;  // Minimum sound to trigger move
+const int MIC_DIFF_THRESHOLD = 3; // Minimum L/R diff to steer
 const int STOP_CONFIRMATION_COUNT = 10;
-const int sampleWindow = 20;
 
 
 
@@ -68,6 +68,7 @@ void setup() {
 
 void loop() {
     updateMode();
+    if (checkObstacle()) return;
     if (challengeMode == LIGHT_DETECTION) {
         lightDetectionLoop();
     } else {
@@ -120,40 +121,22 @@ void setupLightSensors() {
 
 bool isSpinning = true;  // Start by spinning
 
-const int SPIN_TO_MOVE_THRESHOLD = 350;
-const int MOVE_TO_SPIN_THRESHOLD = 250;
-
 void lightDetectionLoop() {
-    if (checkObstacle()) return;
-
     uint16_t lightLevel = getLightIntensity();
     Serial.print("Light level: "); Serial.println(lightLevel);
 
-    if (isSpinning) {
-        if (lightLevel > SPIN_TO_MOVE_THRESHOLD) {
-            isSpinning = false;
-        }
-    } else {
-        if (lightLevel < MOVE_TO_SPIN_THRESHOLD) {
-            isSpinning = true;
-        }
-    }
+    const uint16_t LIGHT_DETECTION_THRESHOLD = 350;  // Adjust as needed
 
-    if (isSpinning) {
-        int spinSpeed = map(lightLevel, 0, 50, 150, 50);
-        spinSpeed = constrain(spinSpeed, 50, 150);
-        spinInPlaceScaled(spinSpeed);
-        Serial.print(" | SpinSpeed: "); Serial.println(spinSpeed);
+    if (lightLevel < LIGHT_DETECTION_THRESHOLD) {
+        // Spin slowly in place while looking for light
+        Serial.println("Spinning to find light...");
+        setMotors(1500, 1480, 150);  // Gentle spin
     } else {
-        int moveSpeed = map(lightLevel, 20, 900, 50, 8);
-        moveSpeed = constrain(moveSpeed, 8, 50);
-        moveForwardScaled(moveSpeed);
-        Serial.print(" | MoveSpeed: "); Serial.println(moveSpeed);
+        // Move forward at fixed speed if light is detected
+        Serial.println("Bright light detected. Moving forward.");
+        setMotors(1540, 1480, 100);  // Move forward
     }
 }
-
-
-
 
 
 
@@ -197,94 +180,88 @@ void audioDetectionLoop() {
     }
 }
 
+// --- Microphone Sampling ---
+int sampleMicAmplitude(int pin, int baseline = 512, int samples = 20) {
+  long sum = 0;
+  for (int i = 0; i < samples; i++) {
+    int raw = analogRead(pin);
+    sum += abs(raw - baseline);
+    delay(1);  // Optional: ensures distinct samples
+  }
+  return sum / samples;
+}
+
 void listenForAudio() {
-    static int leftAccum = 0, rightAccum = 0, samples = 0;
+    static int leftSum = 0, rightSum = 0;
+    static int samples = 0;
 
     if (stateStartTime == 0) {
         stateStartTime = millis();
-        leftAccum = 0;
-        rightAccum = 0;
+        leftSum = 0;
+        rightSum = 0;
         samples = 0;
     }
 
-    if (millis() - stateStartTime < 1000) { // Listen for 1 second
-        int leftAmp = sampleMicrophoneAC(MIC_LEFT_PIN);
-        int rightAmp = sampleMicrophoneAC(MIC_RIGHT_PIN);
+    if (millis() - stateStartTime < 400) {
+        int leftAmp = sampleMicAmplitude(MIC_LEFT_PIN);
+        int rightAmp = sampleMicAmplitude(MIC_RIGHT_PIN);
 
-        leftAccum += leftAmp;
-        rightAccum += rightAmp;
+
+        leftSum += leftAmp;
+        rightSum += rightAmp;
         samples++;
 
-        // Debugging the raw microphone values
-        Serial.print("Left: "); Serial.print(leftAmp);
-        Serial.print(" | Right: "); Serial.println(rightAmp);
-    } else {
-        int avgLeft = leftAccum / max(samples, 1);
-        int avgRight = rightAccum / max(samples, 1);
-        lastDiff = avgLeft - avgRight;
-        lastTotalSound = max(avgLeft, avgRight);
+        //Serial monitor debugging
+        //Serial.print("Left: "); Serial.print(leftAmp);
+        //Serial.print(" | Right: "); Serial.println(rightAmp);
 
-        // Debugging the averages
+        //Graphing for debugging
+        //Serial.print(leftAmp);
+        //Serial.print(",");
+        //Serial.println(rightAmp);
+    } else {
+        int avgLeft = leftSum / max(samples, 1);
+        int avgRight = rightSum / max(samples, 1);
+        lastDiff = avgLeft - avgRight;
+        lastTotalSound = (avgLeft + avgRight) / 2;
+
         Serial.print("Avg Left: "); Serial.print(avgLeft);
-        Serial.print(" | Avg Right: "); Serial.println(avgRight);
+        Serial.print(" | Avg Right: "); Serial.print(avgRight);
+        Serial.print(" | Total Avg: "); Serial.print(lastTotalSound);
+        Serial.print(" | Last Diff "); Serial.println(lastDiff);
 
         audioState = ACTING;
-        stateStartTime = millis();
+        stateStartTime = 0;
     }
 }
 
 
 void actOnAudio() {
-    if (stateStartTime == 0) {
-        stateStartTime = millis();
-    }
-
     if (lastTotalSound > SOUND_THRESHOLD) {
-        // Map the amplitude to a movement duration
-        // Base duration is 150ms for low amplitude (20), and 20ms for high amplitude (60)
-        int moveDuration = map(lastTotalSound, 20, 60, 300, 20);
-        moveDuration = constrain(moveDuration, 20, 300); // Ensure the duration is between 20ms and 150ms
-
-        // If the difference between the microphones is significant, turn left or right
         if (abs(lastDiff) > MIC_DIFF_THRESHOLD) {
             if (lastDiff > 0) {
-                // Turn Left
-                setMotors(1400, 1500, 150);  // turn left a bit
-                Serial.print("Turning Left");
+                Serial.println("Sound stronger on LEFT. Turning Left.");
+                setMotors(1400, 1500, 200);  // Left turn
             } else {
-                // Turn Right
-                setMotors(1500, 1600, 150);  // turn right a bit
-                Serial.print("Turning Right");
+                Serial.println("Sound stronger on RIGHT. Turning Right.");
+                setMotors(1500, 1600, 200);  // Right turn
             }
+        } else {
+            Serial.println("Sound centered. No turn.");
         }
-        delay(200);
-        setMotors(1600, 1400, moveDuration); // Move forward for the scaled duration
-        Serial.print("Moving Forward | Duration: "); Serial.println(moveDuration);
+
+        int moveDuration = map(lastTotalSound, 70, 400, 150, 600);
+        moveDuration = constrain(moveDuration, 150, 600);
+        Serial.print("Moving forward. Duration: "); Serial.println(moveDuration);
+        setMotors(1590, 1430, moveDuration);
     } else {
-        stopMotors(); // No loud sound detected, stop motors
-        Serial.println("No significant sound detected, stopping.");
+        Serial.println("Quiet... Stopping.");
+        stopMotors();
     }
-    if (checkObstacle()) return;
-    audioState = LISTENING; // Return to listening state
-    stateStartTime = 0; // Reset for next listen
+
+    audioState = LISTENING;
 }
 
-
-// --- Microphone Sampling ---
-int sampleMicrophoneAC(int pin) {
-  unsigned long startMillis = millis();
-  int signalMax = 0;
-  int signalMin = 1023;
-
-  while (millis() - startMillis < 20) { // 20ms sample window
-    int sample = analogRead(pin);
-    if (sample < 1023) {
-      if (sample > signalMax) signalMax = sample;
-      if (sample < signalMin) signalMin = sample;
-    }
-  }
-  return signalMax - signalMin; // Peak-to-peak amplitude
-}
 
 // ---------------------
 // Movement Control
@@ -292,9 +269,10 @@ int sampleMicrophoneAC(int pin) {
 
 bool checkObstacle() {
     uint16_t distance = getObstacleDistance();
+    uint16_t currentThreshold = (challengeMode == AUDIO_DETECTION) ? obstacleThresholdAudio : obstacleThresholdLight;
 
     if (challengeComplete) {
-        if (distance >= OBSTACLE_DISTANCE_THRESHOLD) {
+        if (distance >= currentThreshold) {
             if (++consecutiveNoObstacleCount >= STOP_CONFIRMATION_COUNT) {
                 challengeComplete = false;
                 consecutiveNoObstacleCount = 0;
@@ -308,7 +286,7 @@ bool checkObstacle() {
         return true;
     }
 
-    if (distance < OBSTACLE_DISTANCE_THRESHOLD) {
+    if (distance < currentThreshold) {
         challengeComplete = true;
         Serial.println("Obstacle detected. Stopping.");
         blinkLED(2, 300);
@@ -317,17 +295,6 @@ bool checkObstacle() {
     }
 
     return false;
-}
-
-
-void spinInPlaceScaled(int duration) {
-    setMotors(1500, 1475, duration); // Clockwise spin with slight bias
-}
-
-void moveForwardScaled(int duration) {
-    // Compensated forward movement (your original working setup)
-    setMotors(1590, 1430, duration);
-    delay(50);
 }
 
 
