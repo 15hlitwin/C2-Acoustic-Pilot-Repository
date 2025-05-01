@@ -15,14 +15,20 @@ int challengeMode = LIGHT_DETECTION;
 #define STATUS_LED_PIN 2
 #define MODE_SELECT_PIN 3
 
+// --- Modifiable variables ---
+
+const uint16_t LIGHT_DETECTION_THRESHOLD = 20;  // Adjust as needed
+const int SOUND_THRESHOLD = 10;  // Minimum sound to trigger move
+const int MIC_DIFF_THRESHOLD = 3; // Minimum L/R diff to steer
+
 uint16_t obstacleThresholdAudio = 100;
 uint16_t obstacleThresholdLight = 67; 
 
-const uint16_t LIGHT_THRESHOLD = 15;
-const int SOUND_THRESHOLD = 10;  // Minimum sound to trigger move
-const int MIC_DIFF_THRESHOLD = 3; // Minimum L/R diff to steer
-const int STOP_CONFIRMATION_COUNT = 10;
+// --- Setup variables ---
 
+const int STOP_CONFIRMATION_COUNT = 15; // Not a changeable value, leave for best performance
+
+bool blinkingActive = false;
 
 
 // --- Hardware Interfaces ---
@@ -68,7 +74,9 @@ void setup() {
 
 void loop() {
     updateMode();
+    
     if (checkObstacle()) return;
+
     if (challengeMode == LIGHT_DETECTION) {
         lightDetectionLoop();
     } else {
@@ -125,8 +133,6 @@ void lightDetectionLoop() {
     uint16_t lightLevel = getLightIntensity();
     Serial.print("Light level: "); Serial.println(lightLevel);
 
-    const uint16_t LIGHT_DETECTION_THRESHOLD = 350;  // Adjust as needed
-
     if (lightLevel < LIGHT_DETECTION_THRESHOLD) {
         // Spin slowly in place while looking for light
         Serial.println("Spinning to find light...");
@@ -141,13 +147,14 @@ void lightDetectionLoop() {
 
 
 uint16_t getObstacleDistance() {
-    uint16_t distance;
-    do {
-        vl53.read();
-        distance = vl53.ranging_data.range_mm;
-    } while (distance == 0);
-    return distance;
+    vl53.read();
+    if (vl53.ranging_data.range_status != 0) {
+        // Invalid reading (no object detected or out of range)
+        return 9999;  // Treat as "very far away"
+    }
+    return vl53.ranging_data.range_mm;
 }
+
 
 uint16_t getLightIntensity() {
     uint32_t lum = tsl.getFullLuminosity();
@@ -186,12 +193,12 @@ int sampleMicAmplitude(int pin, int baseline = 512, int samples = 20) {
   for (int i = 0; i < samples; i++) {
     int raw = analogRead(pin);
     sum += abs(raw - baseline);
-    delay(1);  // Optional: ensures distinct samples
+    delay(1);
   }
   return sum / samples;
 }
 
-void listenForAudio() {
+void listenForAudio() { // Sampling microphones across a number of samples for a more smooth and accurate source detection
     static int leftSum = 0, rightSum = 0;
     static int samples = 0;
 
@@ -237,20 +244,20 @@ void listenForAudio() {
 
 
 void actOnAudio() {
-    if (lastTotalSound > SOUND_THRESHOLD) {
+    if (lastTotalSound > SOUND_THRESHOLD) { // Logic for determining whether robot should move at all, then comparing microphone amplitudes based on a range of samples.
         if (abs(lastDiff) > MIC_DIFF_THRESHOLD) {
             if (lastDiff > 0) {
                 Serial.println("Sound stronger on LEFT. Turning Left.");
-                setMotors(1400, 1500, 200);  // Left turn
+                setMotors(1500, 1400, 200);  // Left turn
             } else {
                 Serial.println("Sound stronger on RIGHT. Turning Right.");
-                setMotors(1500, 1600, 200);  // Right turn
+                setMotors(1600, 1500, 200);  // Right turn
             }
         } else {
             Serial.println("Sound centered. No turn.");
         }
 
-        int moveDuration = map(lastTotalSound, 70, 400, 150, 600);
+        int moveDuration = map(lastTotalSound, 70, 400, 150, 600); // Amplitude based movement scaling, closer the source = higher amplitude so slower more precise robot movements
         moveDuration = constrain(moveDuration, 150, 600);
         Serial.print("Moving forward. Duration: "); Serial.println(moveDuration);
         setMotors(1590, 1430, moveDuration);
@@ -296,6 +303,7 @@ bool checkObstacle() {
 
     return false;
 }
+
 
 
 void stopMotors() {
